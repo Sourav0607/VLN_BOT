@@ -30,26 +30,47 @@ class PersonNavigator(Node):
         # Action client for Nav2
         self.nav_to_pose_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
         
+        # State variables
         self.latest_distance = None
         self.navigation_triggered = False
+        self.is_navigating = False
+        self.person_goal_position = None  # Store person's position in map frame
+        self.safe_margin = 0.01  # Stop 0.01m away from person (safe distance)
+        self.min_navigation_distance = 0.35  # Only navigate if person is >0.35m away (avoids repeated tiny movements)
         
         self.get_logger().info('Person Navigator node started!')
+        self.get_logger().info(f'Will navigate to persons >={self.min_navigation_distance}m away')
         self.get_logger().info('Waiting for Nav2 action server...')
         self.nav_to_pose_client.wait_for_server()
         self.get_logger().info('Nav2 action server available!')
     
     def distance_callback(self, msg):
-        """When person is detected, calculate and send navigation goal"""
+        """When person is detected, calculate and send navigation goal ONCE"""
         self.latest_distance = msg.data
         
-        # Only trigger navigation once when person is first detected
-        if self.latest_distance > 0 and not self.navigation_triggered:
+        # Don't send new goals while already navigating
+        if self.is_navigating:
+            return
+        
+        # Check if person detected and far enough away
+        if self.latest_distance > self.min_navigation_distance and not self.navigation_triggered:
+            # Person detected and far enough - calculate goal position ONCE
+            self.get_logger().info(f'Person detected at {self.latest_distance:.2f}m - calculating goal position...')
             success = self.send_navigation_goal(self.latest_distance)
             if success:
                 self.navigation_triggered = True
+                self.is_navigating = True
+        elif self.latest_distance > 0 and self.latest_distance <= self.min_navigation_distance:
+            # Person is close enough - no navigation needed
+            if not self.navigation_triggered:
+                self.get_logger().info(
+                    f'Person is close enough ({self.latest_distance:.2f}m), no navigation needed.',
+                    throttle_duration_sec=3.0
+                )
+                self.navigation_triggered = True
     
     def send_navigation_goal(self, distance):
-        """Send goal to Nav2 to approach the person"""
+        """Calculate person's position in map frame and send navigation goal ONCE"""
         try:
             # Wait for map->base_footprint transform (means localization is ready)
             if not self.tf_buffer.can_transform('map', 'base_footprint', rclpy.time.Time()):
@@ -64,36 +85,38 @@ class PersonNavigator(Node):
                 timeout=Duration(seconds=1.0)
             )
             
-            # Calculate target position in base_footprint frame
-            safe_margin = 0.5  # Stop 0.5m away from person
-            target_distance = max(0.3, distance - safe_margin)
+            # Calculate target position: stop at safe_margin away from person
+            # max(0.05, ...) prevents robot from going too close (collision)
+            target_distance = max(0.05, distance - self.safe_margin)
             
-            # Create goal pose in base_footprint frame first
+            # Create goal pose in base_footprint frame (relative to robot)
             goal_pose_base = PoseStamped()
             goal_pose_base.header.frame_id = 'base_footprint'
             goal_pose_base.header.stamp = self.get_clock().now().to_msg()
-            goal_pose_base.pose.position.x = target_distance
+            goal_pose_base.pose.position.x = target_distance  # Forward direction
             goal_pose_base.pose.position.y = 0.0
             goal_pose_base.pose.position.z = 0.0
             goal_pose_base.pose.orientation.w = 1.0
             
-            # Transform to map frame using tf2_geometry_msgs
+            # Transform goal to map frame - this gives us the ABSOLUTE position
             goal_pose_map = tf2_geometry_msgs.do_transform_pose_stamped(goal_pose_base, transform)
             
-            # Create action goal
+            # Store the goal position
+            self.person_goal_position = goal_pose_map
+            
+            # Create Nav2 action goal
             goal_msg = NavigateToPose.Goal()
             goal_msg.pose = goal_pose_map
             
             self.get_logger().info(
-                f'Sending navigation goal: move {target_distance:.2f}m forward '
-                f'(person at {distance:.2f}m, safe margin: {safe_margin}m)'
+                f' Target calculated: Person at {distance:.2f}m, moving to {target_distance:.2f}m away'
             )
             self.get_logger().info(
-                f'Goal in map frame: x={goal_pose_map.pose.position.x:.2f}, '
-                f'y={goal_pose_map.pose.position.y:.2f}'
+                f' Goal position in map: ({goal_pose_map.pose.position.x:.2f}, {goal_pose_map.pose.position.y:.2f})'
             )
+            self.get_logger().info(' Sending goal to Nav2 - will complete even if person disappears from view')
             
-            # Send goal
+            # Send goal to Nav2
             send_goal_future = self.nav_to_pose_client.send_goal_async(
                 goal_msg,
                 feedback_callback=self.feedback_callback
@@ -110,18 +133,31 @@ class PersonNavigator(Node):
         """Handle goal acceptance/rejection"""
         goal_handle = future.result()
         if not goal_handle.accepted:
-            self.get_logger().error('Navigation goal rejected!')
+            self.get_logger().error(' Navigation goal rejected by Nav2!')
+            self.is_navigating = False
+            self.navigation_triggered = False
             return
         
-        self.get_logger().info('Navigation goal accepted!')
+        self.get_logger().info(' Goal accepted! Navigating to person...')
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(self.result_callback)
     
     def result_callback(self, future):
         """Handle navigation result"""
         result = future.result().result
-        self.get_logger().info(f'Navigation completed!')
-        self.navigation_triggered = False  # Allow new navigation
+        status = future.result().status
+        
+        self.is_navigating = False
+        self.navigation_triggered = False  # Reset to allow new detection
+        
+        if status == 4:  # SUCCEEDED
+            self.get_logger().info(' Reached destination! Arrived near person.')
+        elif status == 5:  # CANCELED
+            self.get_logger().warn('  Navigation was canceled')
+        elif status == 6:  # ABORTED  
+            self.get_logger().warn('  Navigation aborted (obstacle blocking path or invalid goal)')
+        else:
+            self.get_logger().error(f' Navigation failed with status: {status}')
     
     def feedback_callback(self, feedback_msg):
         """Handle navigation feedback"""
