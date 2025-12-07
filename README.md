@@ -215,6 +215,53 @@ ros2_ws/
 - Check cmd_vel: `ros2 topic echo /cmd_vel`
 - Ensure no navigation conflict (only search when not navigating)
 
+## Future Enhancements
+
+### Phase 1: Vision-Language Model (VLM) Integration
+- **Dual Detection**: Combine YOLOv8 with VLM for robust object recognition
+- **Cross-validation**: Use both models to verify detections and reduce false positives
+- **Enhanced accuracy**: VLM provides semantic understanding beyond bounding boxes
+
+### Phase 2: Large Language Model (LLM) for Natural Language Commands
+- **Voice/Text Interface**: Natural language commands like "go to person" or "find the chair"
+- **Keyword Extraction**: LLM processes commands and extracts target objects
+- **Topic Publishing**: Extracted targets published to `/target_object` topic
+- **Dynamic Object Tracking**: System adapts to any object specified in natural language
+
+### Phase 3: NVIDIA Jetson Orin Nano Deployment
+- **Hardware Platform**: NVIDIA Jetson Orin Nano Super Developer Kit
+- **Edge AI Processing**: 
+  - Run YOLOv8 with TensorRT optimization
+  - Deploy quantized VLM models (e.g., LLaVA, MiniGPT-4)
+  - Run lightweight LLM (e.g., Llama 2 7B quantized)
+- **Real-time Performance**: GPU acceleration for inference
+- **Low Latency**: On-device processing without cloud dependency
+
+
+### Example Workflow
+1. User: "Go to the person near the table"
+2. LLM extracts: `target_object: "person"`, `context: "near table"`
+3. YOLOv8 detects persons in frame
+4. VLM validates detection and identifies spatial context
+5. System navigates to target using existing Nav2 stack
+
+### Technical Stack (Future)
+- **LLM**: Llama 2 7B (quantized 4-bit) or Phi-2
+- **VLM**: LLaVA 1.5 or MiniGPT-4 (optimized for Jetson)
+- **Optimization**: TensorRT, ONNX Runtime, INT8 quantization
+- **ROS2 Integration**: Custom nodes for LLM/VLM inference
+- **Communication**: ROS2 topics for seamless integration
+
+### Development Roadmap
+- [ ] Implement LLM node for command parsing
+- [ ] Add VLM node for visual reasoning
+- [ ] Create `/target_object` topic communication
+- [ ] Port models to Jetson Orin Nano
+- [ ] Optimize inference with TensorRT
+- [ ] Add multi-object tracking capability
+- [ ] Implement voice command interface
+- [ ] Real robot testing on TurtleBot3 hardware
+
 ## License
 
 MIT
@@ -222,5 +269,3 @@ MIT
 ## Author
 
 Sourav - [GitHub](https://github.com/Sourav0607)
-
-Sourav
