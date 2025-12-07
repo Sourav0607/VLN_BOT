@@ -69,7 +69,7 @@ source ~/.bashrc
 
 1. Launch TurtleBot3 in Gazebo:
 ```bash
-export TURTLEBOT3_MODEL=waffle
+export TURTLEBOT3_MODEL=waffle_pi
 ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
 ```
 
