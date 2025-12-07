@@ -4,11 +4,13 @@ import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
 from std_msgs.msg import Float32
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from tf2_ros import Buffer, TransformListener
 import tf2_geometry_msgs
 from rclpy.duration import Duration
+import math
+import time
 
 
 class PersonNavigator(Node):
@@ -27,6 +29,9 @@ class PersonNavigator(Node):
             10
         )
         
+        # Publisher for direct velocity control (for rotation)
+        self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
+        
         # Action client for Nav2
         self.nav_to_pose_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
         
@@ -38,15 +43,37 @@ class PersonNavigator(Node):
         self.safe_margin = 0.01  # Stop 0.01m away from person (safe distance)
         self.min_navigation_distance = 0.35  # Only navigate if person is >0.35m away (avoids repeated tiny movements)
         
+        # Search behavior variables
+        self.last_person_time = None
+        self.person_lost_timeout = 5.0  # If no person for 5 seconds, start search
+        self.is_searching = False
+        self.search_attempts = 0
+        self.max_search_attempts = 3  # Try 3 times: rotate, move forward, rotate, move forward, rotate
+        self.person_detected_during_search = False
+        self.rotation_start_time = None
+        self.rotation_timer = None
+        self.move_start_time = None
+        self.move_timer = None
+        
         self.get_logger().info('Person Navigator node started!')
         self.get_logger().info(f'Will navigate to persons >={self.min_navigation_distance}m away')
         self.get_logger().info('Waiting for Nav2 action server...')
         self.nav_to_pose_client.wait_for_server()
         self.get_logger().info('Nav2 action server available!')
+        
+        # Timer to check if person is lost
+        self.create_timer(1.0, self.check_person_lost)
     
     def distance_callback(self, msg):
         """When person is detected, calculate and send navigation goal ONCE"""
         self.latest_distance = msg.data
+        self.last_person_time = time.time()  # Update last seen time
+        
+        # If person detected during search, mark it
+        if self.is_searching:
+            self.person_detected_during_search = True
+            self.get_logger().info(' Person found during search! Stopping search...')
+            self.stop_search()
         
         # Don't send new goals while already navigating
         if self.is_navigating:
@@ -164,6 +191,179 @@ class PersonNavigator(Node):
         feedback = feedback_msg.feedback
         # Optionally log progress
         pass
+    
+    def check_person_lost(self):
+        """Timer callback to check if person has been lost for too long"""
+        if self.is_searching or self.is_navigating:
+            return  # Don't start search if already searching or navigating
+        
+        if self.last_person_time is None:
+            return  # Person never detected yet
+        
+        time_since_person = time.time() - self.last_person_time
+        
+        if time_since_person > self.person_lost_timeout:
+            self.get_logger().warn(f'  Person lost for {time_since_person:.1f}s - starting search behavior...')
+            self.start_search()
+    
+    def start_search(self):
+        """Start the search behavior: rotate 360°, if not found move forward and repeat"""
+        self.is_searching = True
+        self.search_attempts = 0
+        self.person_detected_during_search = False
+        self.perform_search_cycle()
+    
+    def perform_search_cycle(self):
+        """Perform one search cycle: rotate 360°, check if found, if not move forward"""
+        if not self.is_searching:
+            return
+        
+        if self.search_attempts >= self.max_search_attempts:
+            self.get_logger().warn(' Search failed after 3 attempts. Stopping search.')
+            self.stop_search()
+            return
+        
+        self.search_attempts += 1
+        self.get_logger().info(f' Search attempt {self.search_attempts}/{self.max_search_attempts}: Rotating 360°...')
+        
+        # Perform 360° rotation
+        self.rotate_360()
+        
+    def rotate_360(self):
+        """Rotate robot 360 degrees in place using timer"""
+        rotation_speed = 0.5  # rad/s
+        rotation_time = (2 * math.pi) / rotation_speed  # ~12.6 seconds
+        
+        self.get_logger().info(f' Rotating 360° (will take ~{rotation_time:.1f}s)...')
+        
+        self.rotation_start_time = time.time()
+        
+        # Create timer to publish rotation commands at 20Hz
+        self.rotation_timer = self.create_timer(0.05, lambda: self.rotation_step(rotation_speed, rotation_time))
+    
+    def rotation_step(self, rotation_speed, rotation_time):
+        """Timer callback for rotation"""
+        if not self.is_searching or self.person_detected_during_search:
+            if self.person_detected_during_search:
+                self.get_logger().info(' Person detected during rotation!')
+            self.stop_rotation()
+            if self.person_detected_during_search:
+                self.stop_search()
+            else:
+                self.after_rotation()
+            return
+        
+        elapsed = time.time() - self.rotation_start_time
+        
+        if elapsed >= rotation_time:
+            self.stop_rotation()
+            self.after_rotation()
+            return
+        
+        # Publish rotation command
+        twist = Twist()
+        twist.angular.z = rotation_speed
+        self.cmd_vel_pub.publish(twist)
+    
+    def stop_rotation(self):
+        """Stop rotation and cleanup timer"""
+        if self.rotation_timer:
+            self.rotation_timer.cancel()
+            self.rotation_timer = None
+        
+        # Stop robot
+        twist = Twist()
+        self.cmd_vel_pub.publish(twist)
+        self.cmd_vel_pub.publish(twist)
+    
+    def after_rotation(self):
+        """Called after rotation completes"""
+        time.sleep(0.3)
+        
+        if self.person_detected_during_search:
+            self.stop_search()
+            return
+        
+        # Person not found - move forward if we have more attempts
+        if self.search_attempts < self.max_search_attempts:
+            self.get_logger().info(' Person not found. Moving forward 0.5m...')
+            self.move_forward(0.5)
+        else:
+            self.get_logger().warn(' Search failed after 3 attempts. Stopping search.')
+            self.stop_search()
+    
+    def move_forward(self, distance):
+        """Move robot forward by specified distance using timer"""
+        move_speed = 0.15  # m/s
+        move_time = distance / move_speed  # time to cover distance
+        
+        self.move_start_time = time.time()
+        
+        # Create timer to publish move commands at 20Hz
+        self.move_timer = self.create_timer(0.05, lambda: self.move_step(move_speed, move_time))
+    
+    def move_step(self, move_speed, move_time):
+        """Timer callback for forward movement"""
+        if not self.is_searching or self.person_detected_during_search:
+            self.stop_movement()
+            if self.person_detected_during_search:
+                self.stop_search()
+            else:
+                self.after_movement()
+            return
+        
+        elapsed = time.time() - self.move_start_time
+        
+        if elapsed >= move_time:
+            self.stop_movement()
+            self.after_movement()
+            return
+        
+        # Publish forward command
+        twist = Twist()
+        twist.linear.x = move_speed
+        self.cmd_vel_pub.publish(twist)
+    
+    def stop_movement(self):
+        """Stop forward movement and cleanup timer"""
+        if self.move_timer:
+            self.move_timer.cancel()
+            self.move_timer = None
+        
+        # Stop robot
+        twist = Twist()
+        self.cmd_vel_pub.publish(twist)
+        self.cmd_vel_pub.publish(twist)
+    
+    def after_movement(self):
+        """Called after forward movement completes"""
+        time.sleep(0.5)
+        
+        if self.person_detected_during_search:
+            self.stop_search()
+        else:
+            # Continue search with next rotation
+            self.perform_search_cycle()
+    
+    def stop_search(self):
+        """Stop the search behavior"""
+        self.is_searching = False
+        self.person_detected_during_search = False
+        
+        # Cancel any active timers
+        if self.rotation_timer:
+            self.rotation_timer.cancel()
+            self.rotation_timer = None
+        if self.move_timer:
+            self.move_timer.cancel()
+            self.move_timer = None
+        
+        # Make sure robot is stopped
+        twist = Twist()
+        self.cmd_vel_pub.publish(twist)
+        self.cmd_vel_pub.publish(twist)
+        
+        self.get_logger().info(' Search behavior stopped.')
 
 
 def main(args=None):
