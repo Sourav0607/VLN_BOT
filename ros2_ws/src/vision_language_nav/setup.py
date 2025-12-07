@@ -22,6 +22,12 @@ setup(
         # URDF files
         (os.path.join('share', package_name, 'urdf'),
             glob('urdf/*.*')),
+        # Config files
+        (os.path.join('share', package_name, 'config'),
+            glob('config/*.*')),
+        # Maps
+        (os.path.join('share', package_name, 'maps'),
+            glob('maps/*.*')),
        
     ],
     install_requires=['setuptools'],
@@ -38,6 +44,7 @@ setup(
     entry_points={
         'console_scripts': [
             'person_detector = vision_language_nav.person_detector:main',
+            'person_navigator = vision_language_nav.person_navigator:main',
         ],
     },
 )
