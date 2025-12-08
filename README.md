@@ -108,7 +108,7 @@ ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
 cd ~/vision_navigation/ros2_ws
 source install/setup.bash
 export TURTLEBOT3_MODEL=waffle
-ros2 launch turtlebot3_navigation2 navigation2.launch.py use_sim_time:=True map:=$HOME/vision_navigation/ros2_ws/src/vision_language_nav/maps/my_map.yaml
+ros2 launch turtlebot3_navigation2 navigation2.launch.py use_sim_time:=True map:=$HOME/vision_navigation/ros2_ws/src/vision_language_nav/maps/my_world_map.yaml
 ```
 
 **Terminal 3 - Person Detector:**
