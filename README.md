@@ -47,7 +47,7 @@ wget https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt
 # Build
 colcon build --packages-select vision_language_nav
 source install/setup.bash
-export TURTLEBOT3_MODEL=waffle
+export TURTLEBOT3_MODEL=waffle_pi
 ```
 
 ## Usage
