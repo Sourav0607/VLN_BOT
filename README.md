@@ -12,9 +12,10 @@ Autonomous navigation system with natural language commands via LLM running on N
 ![Gazebo View](media/gazebo_view.png)
 
 ### Project Working Demo
+
 https://github.com/user-attachments/assets/demo_video.mp4
 
-[Download Demo Video](media/demo_video.mp4)
+*Click the video above to play, or [download it here](media/demo_video.mp4)*
 
 ## Features
 
