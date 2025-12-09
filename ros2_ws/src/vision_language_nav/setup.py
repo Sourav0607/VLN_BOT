@@ -45,6 +45,7 @@ setup(
         'console_scripts': [
             'person_detector = vision_language_nav.person_detector:main',
             'person_navigator = vision_language_nav.person_navigator:main',
+            'llam_parser = vision_language_nav.llm_command_parser:main',
         ],
     },
 )
