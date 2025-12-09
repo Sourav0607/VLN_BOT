@@ -24,7 +24,7 @@ class PersonNavigator(Node):
         # Subscribe to person distance
         self.distance_sub = self.create_subscription(
             Float32,
-            '/person/distance',
+            '/target/distance',
             self.distance_callback,
             10
         )
