@@ -126,6 +126,7 @@ ros2 run vision_language_nav llm_parser
 ### Send Natural Language Commands
 
 **From Jetson (or any system on ROS2 network):**
+```bash
 # Send commands via topic
 ros2 topic pub /voice_command std_msgs/String "data: 'go to the person'"
 ros2 topic pub /voice_command std_msgs/String "data: 'find the chair'"
@@ -255,8 +256,6 @@ ros2_ws/
 - **Jetson Orin Nano**: LLM inference (CPU-only TinyLlama) + ROS2 publisher
 - **Main System**: Gazebo simulation, YOLOv8 detection, Nav2 navigation
 - **Communication**: ROS2 DDS over WiFi/Ethernet
-    └── worlds/                      # Gazebo worlds
-```
 
 ## Limitations
 
