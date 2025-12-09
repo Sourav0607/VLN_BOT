@@ -2,6 +2,16 @@
 
 A ROS2 Humble-based autonomous navigation system for TurtleBot3 that detects persons using YOLOv8, estimates distance, and navigates to them using Nav2 with fallback search behavior.
 
+## Demo
+
+### Gazebo Simulation Environment
+![Gazebo View](media/gazebo_view.png)
+
+### Project Working Demo
+https://github.com/user-attachments/assets/demo_video.mp4
+
+[Download Demo Video](media/demo_video.mp4)
+
 ## Features
 
 - **Person Detection**: YOLOv8-nano for real-time person detection
