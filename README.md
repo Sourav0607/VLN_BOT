@@ -6,16 +6,9 @@
 
 Autonomous navigation system with natural language commands via LLM running on NVIDIA Jetson Orin Nano, YOLOv8 detection, monocular depth estimation, and Nav2 for intelligent object following with search recovery.
 
-## Demo
+## Gazebo view
 
-### Gazebo Simulation Environment
 ![Gazebo View](media/gazebo_view.png)
-
-### Project Working Demo
-
-https://github.com/user-attachments/assets/demo_video.mp4
-
-*Click the video above to play, or [download it here](media/demo_video.mp4)*
 
 ## Features
 
