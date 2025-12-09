@@ -3,8 +3,8 @@
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
-import requests
-import json
+import subprocess
+import os
 import time
 
 
@@ -12,9 +12,8 @@ class LLMCommandParser(Node):
     def __init__(self):
         super().__init__('llm_command_parser')
 
-        # Ollama API endpoint (runs locally on jetson)
-        self.ollama_url = "http://localhost:11434/api/generate"
-        self.model_name = "neural-chat:7b-v3.1-q4_K_M"
+        # Model name
+        self.model_name = "tinyllama"
 
         # COCO classes mapping for yolov8 (name: class_id)
         self.coco_classes = {
@@ -36,6 +35,9 @@ class LLMCommandParser(Node):
             "hair drier": 78, "toothbrush": 79,
         }
 
+        # Reverse mapping for quick lookup
+        self.class_id_to_name = {v: k for k, v in self.coco_classes.items()}
+
         # Subscriber to receive LLM commands
         self.subscription = self.create_subscription(
             String,
@@ -48,26 +50,84 @@ class LLMCommandParser(Node):
 
         self.get_logger().info("LLM Command Parser Node has been started.")
         self.get_logger().info(f'Using Ollama model: {self.model_name}')
-        self.get_logger().info(f'Ollama API: {self.ollama_url}')
+        self.get_logger().info('Using CPU-only inference for Jetson Orin Nano')
 
         # Test the ollama connection
         self.test_ollama_connection()
 
     def test_ollama_connection(self):
         """Test if ollama service is running"""
-
         try:
-            response = requests.get("http://localhost:11434/api/tags",
-                                    timeout=5)
-            if response.status_code == 200:
-                models = response.json().get("models", [])
-                self.get_logger().info(f'Connected to Ollama. Available models: {len(models)}')
+            result = subprocess.run(
+                ['ollama', 'list'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                self.get_logger().info('✓ Connected to Ollama')
             else:
-                self.get_logger().error(f'Failed to connect to Ollama API')
+                self.get_logger().error(f'Ollama error: {result.stderr}')
         except Exception as e:
-            self.get_logger().error(f'Error connecting to Ollama API: {e}')
-            self.get_logger().error('Make sure Ollama is running: ollama serve')
+            self.get_logger().error(f'Error connecting to Ollama: {e}')
 
+    def call_ollama(self, prompt):
+        """Call Ollama using CPU only (no CUDA)"""
+        try:
+            start_time = time.time()
+            
+            # Disable GPU, use only CPU
+            env = os.environ.copy()
+            env['CUDA_VISIBLE_DEVICES'] = ''  # Disable CUDA
+            env['OLLAMA_NUM_GPU'] = '0'  # Disable GPU layers
+            
+            result = subprocess.run(
+                ['ollama', 'run', '--nowordwrap', self.model_name, prompt],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env=env
+            )
+            
+            inference_time = time.time() - start_time
+            
+            if result.returncode == 0:
+                return result.stdout.strip(), inference_time
+            else:
+                self.get_logger().error(f'Ollama stderr: {result.stderr}')
+                return None, inference_time
+                
+        except subprocess.TimeoutExpired:
+            self.get_logger().error('Ollama command timed out (>120s)')
+            return None, 120.0
+        except Exception as e:
+            self.get_logger().error(f'Error calling Ollama: {e}')
+            return None, 0.0
+    
+    def keyword_fallback_parser(self, command):
+        """Fallback keyword-based parser if LLM fails"""
+        command_lower = command.lower()
+        
+        # Simple keyword matching
+        keywords = {
+            'person': ['person', 'human', 'guy', 'girl', 'man', 'woman', 'people'],
+            'dog': ['dog', 'puppy', 'canine'],
+            'cat': ['cat', 'kitten', 'feline'],
+            'chair': ['chair', 'seat', 'stool'],
+            'car': ['car', 'vehicle', 'automobile'],
+            'bicycle': ['bicycle', 'bike', 'cycle'],
+            'bottle': ['bottle', 'water bottle'],
+            'cup': ['cup', 'mug', 'glass'],
+            'book': ['book', 'reading'],
+            'laptop': ['laptop', 'computer', 'pc'],
+        }
+        
+        for obj_name, keywords_list in keywords.items():
+            for keyword in keywords_list:
+                if keyword in command_lower:
+                    return obj_name
+        
+        return None
     
     def process_command(self, msg):
         """Parse text command with LLM and extract target object"""
@@ -75,69 +135,42 @@ class LLMCommandParser(Node):
         user_command = msg.data
         self.get_logger().info(f'Received command: "{user_command}"')
 
-        # Create optimized prompt for object extraction
-        prompt = f"""You are a helpful assistant that extracts target objects from navigation commands. Extract only one target object from the command below. Reply with only the target object name, nothing else.
-Command: "{user_command}"
-Object: """
+        # Create prompt for object extraction
+        prompt = f"Extract object name: {user_command}\nObject:"
 
-        try:
-            start_time = time.time()
+        # Try LLM first
+        extracted_object, inference_time = self.call_ollama(prompt)
+        
+        if extracted_object:
+            extracted_object = extracted_object.strip().lower().split('\n')[0].strip()
+            self.get_logger().info(f'LLM extracted: "{extracted_object}" ({inference_time:.2f}s)')
+        else:
+            # Fallback to keyword-based parser
+            self.get_logger().warn('LLM failed, using keyword-based fallback parser')
+            extracted_object = self.keyword_fallback_parser(user_command)
+            if extracted_object:
+                self.get_logger().info(f'Fallback extracted: "{extracted_object}"')
 
-            # Call Ollama API with optimized parameters for Jetson
-            response = requests.post(
-                self.ollama_url,
-                json={
-                    "model": self.model_name,
-                    "prompt": prompt,
-                    "stream": False,
-                    "temperature": 0.1,
-                    "top_p": 0.9,
-                    "top_k": 40,
-                    "num_predict": 10, # Short response
-                },
-                timeout=30
-            )
+        # Find best match from coco classes
+        if extracted_object:
+            matched_object = self.find_best_match(extracted_object)
 
-            inference_time = time.time() - start_time
-
-            if response.status_code == 200:
-                result = response.json()
-                extracted_object = result['response'].strip().lower()
-
-                # Clean up the response
-                extracted_object = extracted_object.split('\n')[0].strip()
-
-                self.get_logger().info(f'LLM extracted: "{extracted_object}" (inference time: {inference_time:.2f}s)')
-
-                # Find best match from coco classes
-                matched_object = self.find_best_match(extracted_object)
-
-                if matched_object:
-                    # Publish target object to YOLO detector
-                    target_msg = String()
-                    target_msg.data = matched_object
-                    self.publisher_.publish(target_msg)
-                    self.get_logger().info(f'✓ Published target: "{matched_object}" (class ID: {self.coco_classes[matched_object]}) to YOLO')
-                else:
-                    available_classes = ", ".join(list(self.coco_classes.keys())[:10])
-                    self.get_logger().warn(
-                        f'Object "{extracted_object}" not found in COCO classes. '
-                        f'Available: {available_classes}...'
-                    )
+            if matched_object:
+                # Publish target object to YOLO detector
+                target_msg = String()
+                target_msg.data = matched_object
+                self.publisher_.publish(target_msg)
+                self.get_logger().info(f'✓ Target: "{matched_object}" (class {self.coco_classes[matched_object]}) → YOLO')
             else:
-                self.get_logger().error(f'Error from Ollama API: Status {response.status_code}')
-
-        except requests.exceptions.Timeout:
-            self.get_logger().error('Ollama API request timed out (>30s). Model might be too large.')
-        except requests.exceptions.ConnectionError:
-            self.get_logger().error('Connection error while connecting to Ollama API.')
-        except Exception as e:
-            self.get_logger().error(f'An error occurred: {e}')
+                available = ", ".join(list(self.coco_classes.keys())[:5])
+                self.get_logger().warn(f'"{extracted_object}" not in COCO. Available: {available}...')
+        else:
+            self.get_logger().error('Failed to extract object from command')
 
     def find_best_match(self, extracted_text):
         """Find best matching COCO class from extracted text"""
 
-        extracted_lower = extracted_text.lower()
+        extracted_lower = extracted_text.lower().strip()
 
         # Direct match
         if extracted_lower in self.coco_classes:
@@ -145,12 +178,12 @@ Object: """
         
         # Partial match - check if any class is contained in extracted text
         for class_name in self.coco_classes.keys():
-            if class_name in extracted_lower:
+            if class_name in extracted_lower and len(class_name) > 2:
                 return class_name
             
         # Check if extracted text contains any coco class 
         for class_name in self.coco_classes.keys():
-            if extracted_lower in class_name:
+            if extracted_lower in class_name and len(class_name) > 2:
                 return class_name
             
         return None

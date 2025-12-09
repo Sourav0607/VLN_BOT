@@ -59,14 +59,14 @@ class PersonDetector(Node):
             10
         )
         
-        # Target object (default: person)
-        self.target_object = 'person'
+        # Target object - START WITH NONE (wait for command)
+        self.target_object = None
         self.target_class_id = None
         self.target_confidence_threshold = 0.5
         
         self.frame_count = 0
-        self.get_logger().info('Person detector initialized!')
-        self.get_logger().info(f'Current target: {self.target_object}')
+        self.get_logger().info('✓ Person detector initialized!')
+        self.get_logger().info('⏳ Waiting for target object from LLM parser...')
     
     def set_target_object(self, msg):
         """Receive target object from LLM parser"""
@@ -74,7 +74,8 @@ class PersonDetector(Node):
         if new_target != self.target_object:
             self.target_object = new_target
             self.target_class_id = None  # Reset class ID
-            self.get_logger().info(f'🎯 Target object changed to: "{self.target_object}"')
+            self.get_logger().info(f'🎯 TARGET OBJECT SET: "{self.target_object}"')
+            self.get_logger().info(f'   Starting detection for: {self.target_object}')
     
     def get_class_id_for_object(self, class_name):
         """Get YOLO class ID for a given object name"""
@@ -96,11 +97,17 @@ class PersonDetector(Node):
         """Process RGB image with YOLO"""
         self.frame_count += 1
         
+        # If no target object set, skip detection
+        if self.target_object is None:
+            if self.frame_count % 60 == 0:  # Log once every 2 seconds at 30Hz
+                self.get_logger().info('⏳ Waiting for target object... (skipping detection)')
+            return
+        
         # Log every 30 frames (once per second at 30Hz)
         log_this_frame = (self.frame_count % 30 == 0)
         
         if log_this_frame:
-            self.get_logger().info(f'Processing frame {self.frame_count}...')
+            self.get_logger().info(f'Frame {self.frame_count}: Detecting "{self.target_object}"...')
         
         try:
             # Convert ROS Image to OpenCV format
@@ -125,12 +132,6 @@ class PersonDetector(Node):
                     conf = float(box.conf[0])
                     class_name = self.model.names[cls_id]
                     
-                    # Log all detections periodically
-                    if log_this_frame:
-                        self.get_logger().info(
-                            f'Detected: {class_name} (conf: {conf:.2f}, class_id: {cls_id})'
-                        )
-                    
                     # Check if matches target object
                     if (class_name.lower() == self.target_object and 
                         conf > self.target_confidence_threshold):
@@ -154,7 +155,7 @@ class PersonDetector(Node):
                         
                         depth_str = f"~{estimated_depth:.2f}m"
                         
-                        # Draw bounding box
+                        # Draw bounding box (green for target)
                         cv2.rectangle(cv_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
                         
                         # Add label
@@ -167,8 +168,8 @@ class PersonDetector(Node):
                         
                         if log_this_frame:
                             self.get_logger().info(
-                                f'✓ {self.target_object.upper()} at ({center_x}, {center_y}) '
-                                f'confidence: {conf:.2f} distance: {depth_str}'
+                                f'✓ {self.target_object.upper()} detected at ({center_x}, {center_y}) '
+                                f'conf: {conf:.2f} distance: {depth_str}'
                             )
             
             # Publish closest target distance and info
@@ -184,15 +185,17 @@ class PersonDetector(Node):
             
             # Log summary every 30 frames
             if log_this_frame:
+                status = "Found" if target_count > 0 else "Not found"
                 self.get_logger().info(
-                    f'Frame {self.frame_count}: Total detections={total_detections}, '
-                    f'Target "{self.target_object}"={target_count}'
+                    f'   Total in frame: {total_detections} | '
+                    f'Target "{self.target_object}": {target_count} [{status}]'
                 )
             
             # Add frame info overlay
-            info_text = f'Target: {self.target_object} | Detections: {target_count}'
-            cv2.putText(cv_image, info_text, (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+            overlay_color = (0, 255, 0) if target_count > 0 else (0, 165, 255)  # Green if found, Orange if not
+            status_text = f'Target: {self.target_object} | Found: {target_count}'
+            cv2.putText(cv_image, status_text, (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, overlay_color, 2)
             
             # Publish annotated image
             annotated_msg = self.bridge.cv2_to_imgmsg(cv_image, encoding='bgr8')
