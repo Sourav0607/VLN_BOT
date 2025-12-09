@@ -56,8 +56,8 @@ class PersonNavigator(Node):
         self.move_timer = None
         
         self.get_logger().info('Person Navigator node started!')
-        self.get_logger().info(f'Will navigate to persons >={self.min_navigation_distance}m away')
-        self.get_logger().info('Waiting for Nav2 action server...')
+        self.get_logger().info(f'  Min distance to navigate: {self.min_navigation_distance}m')
+        self.get_logger().info('  Waiting for Nav2 action server...')
         self.nav_to_pose_client.wait_for_server()
         self.get_logger().info('Nav2 action server available!')
         
@@ -69,10 +69,10 @@ class PersonNavigator(Node):
         self.latest_distance = msg.data
         self.last_person_time = time.time()  # Update last seen time
         
-        # If person detected during search, mark it
+        # If target detected during search, mark it
         if self.is_searching:
             self.person_detected_during_search = True
-            self.get_logger().info(' Person found during search! Stopping search...')
+            self.get_logger().info('Target found during search! Stopping search...')
             self.stop_search()
         
         # Don't send new goals while already navigating
@@ -101,7 +101,7 @@ class PersonNavigator(Node):
         try:
             # Wait for map->base_footprint transform (means localization is ready)
             if not self.tf_buffer.can_transform('map', 'base_footprint', rclpy.time.Time()):
-                self.get_logger().warn('Map frame not available yet. Please set initial pose in RViz (2D Pose Estimate)')
+                self.get_logger().warn('Map frame not available. Set initial pose in RViz (2D Pose Estimate)')
                 return False
             
             # Get current robot pose in map frame
@@ -160,12 +160,12 @@ class PersonNavigator(Node):
         """Handle goal acceptance/rejection"""
         goal_handle = future.result()
         if not goal_handle.accepted:
-            self.get_logger().error(' Navigation goal rejected by Nav2!')
+            self.get_logger().error('Navigation goal rejected by Nav2!')
             self.is_navigating = False
             self.navigation_triggered = False
             return
         
-        self.get_logger().info(' Goal accepted! Navigating to person...')
+        self.get_logger().info('Goal accepted! Navigating...')
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(self.result_callback)
     
@@ -203,7 +203,7 @@ class PersonNavigator(Node):
         time_since_person = time.time() - self.last_person_time
         
         if time_since_person > self.person_lost_timeout:
-            self.get_logger().warn(f'  Person lost for {time_since_person:.1f}s - starting search behavior...')
+            self.get_logger().warn(f'Target lost for {time_since_person:.1f}s - starting search...')
             self.start_search()
     
     def start_search(self):
@@ -219,12 +219,12 @@ class PersonNavigator(Node):
             return
         
         if self.search_attempts >= self.max_search_attempts:
-            self.get_logger().warn(' Search failed after 3 attempts. Stopping search.')
+            self.get_logger().warn('Search failed after max attempts. Stopping.')
             self.stop_search()
             return
         
         self.search_attempts += 1
-        self.get_logger().info(f' Search attempt {self.search_attempts}/{self.max_search_attempts}: Rotating 360°...')
+        self.get_logger().info(f'Search attempt {self.search_attempts}/{self.max_search_attempts}: Rotating 360...')
         
         # Perform 360° rotation
         self.rotate_360()
@@ -234,7 +234,7 @@ class PersonNavigator(Node):
         rotation_speed = 0.5  # rad/s
         rotation_time = (2 * math.pi) / rotation_speed  # ~12.6 seconds
         
-        self.get_logger().info(f' Rotating 360° (will take ~{rotation_time:.1f}s)...')
+        self.get_logger().info(f'Rotating 360 degrees (will take ~{rotation_time:.1f}s)...')
         
         self.rotation_start_time = time.time()
         
@@ -245,7 +245,7 @@ class PersonNavigator(Node):
         """Timer callback for rotation"""
         if not self.is_searching or self.person_detected_during_search:
             if self.person_detected_during_search:
-                self.get_logger().info(' Person detected during rotation!')
+                self.get_logger().info('Target detected during rotation!')
             self.stop_rotation()
             if self.person_detected_during_search:
                 self.stop_search()
@@ -286,7 +286,7 @@ class PersonNavigator(Node):
         
         # Person not found - move forward if we have more attempts
         if self.search_attempts < self.max_search_attempts:
-            self.get_logger().info(' Person not found. Moving forward 0.5m...')
+            self.get_logger().info('Person not found. Moving forward 0.5m...')
             self.move_forward(0.5)
         else:
             self.get_logger().warn(' Search failed after 3 attempts. Stopping search.')
@@ -363,7 +363,7 @@ class PersonNavigator(Node):
         self.cmd_vel_pub.publish(twist)
         self.cmd_vel_pub.publish(twist)
         
-        self.get_logger().info(' Search behavior stopped.')
+        self.get_logger().info('Search stopped.')
 
 
 def main(args=None):

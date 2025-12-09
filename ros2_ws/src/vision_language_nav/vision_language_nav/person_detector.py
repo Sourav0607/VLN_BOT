@@ -65,8 +65,8 @@ class PersonDetector(Node):
         self.target_confidence_threshold = 0.5
         
         self.frame_count = 0
-        self.get_logger().info('✓ Person detector initialized!')
-        self.get_logger().info('⏳ Waiting for target object from LLM parser...')
+        self.get_logger().info('Person detector initialized!')
+        self.get_logger().info('Waiting for target object from LLM parser...')
     
     def set_target_object(self, msg):
         """Receive target object from LLM parser"""
@@ -74,7 +74,7 @@ class PersonDetector(Node):
         if new_target != self.target_object:
             self.target_object = new_target
             self.target_class_id = None  # Reset class ID
-            self.get_logger().info(f'🎯 TARGET OBJECT SET: "{self.target_object}"')
+            self.get_logger().info(f'TARGET OBJECT SET: "{self.target_object}"')
             self.get_logger().info(f'   Starting detection for: {self.target_object}')
     
     def get_class_id_for_object(self, class_name):
@@ -100,7 +100,7 @@ class PersonDetector(Node):
         # If no target object set, skip detection
         if self.target_object is None:
             if self.frame_count % 60 == 0:  # Log once every 2 seconds at 30Hz
-                self.get_logger().info('⏳ Waiting for target object... (skipping detection)')
+                self.get_logger().info('Waiting for target object... (skipping detection)')
             return
         
         # Log every 30 frames (once per second at 30Hz)
@@ -168,7 +168,7 @@ class PersonDetector(Node):
                         
                         if log_this_frame:
                             self.get_logger().info(
-                                f'✓ {self.target_object.upper()} detected at ({center_x}, {center_y}) '
+                                f'{self.target_object.upper()} detected at ({center_x}, {center_y}) '
                                 f'conf: {conf:.2f} distance: {depth_str}'
                             )
             

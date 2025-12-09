@@ -6,6 +6,7 @@ from std_msgs.msg import String
 import subprocess
 import os
 import time
+import json
 
 
 class LLMCommandParser(Node):
@@ -14,6 +15,7 @@ class LLMCommandParser(Node):
 
         # Model name
         self.model_name = "tinyllama"
+        self.use_llm = True  # Flag to enable/disable LLM
 
         # COCO classes mapping for yolov8 (name: class_id)
         self.coco_classes = {
@@ -35,8 +37,19 @@ class LLMCommandParser(Node):
             "hair drier": 78, "toothbrush": 79,
         }
 
-        # Reverse mapping for quick lookup
-        self.class_id_to_name = {v: k for k, v in self.coco_classes.items()}
+        # Enhanced keyword map (fallback)
+        self.keyword_map = {
+            'person': ['person', 'human', 'guy', 'girl', 'man', 'woman', 'people', 'someone'],
+            'dog': ['dog', 'puppy', 'canine'],
+            'cat': ['cat', 'kitten', 'feline'],
+            'chair': ['chair', 'seat', 'stool'],
+            'car': ['car', 'vehicle', 'automobile'],
+            'bicycle': ['bicycle', 'bike', 'cycle'],
+            'bottle': ['bottle'],
+            'cup': ['cup', 'mug', 'glass'],
+            'book': ['book'],
+            'laptop': ['laptop', 'computer', 'pc'],
+        }
 
         # Subscriber to receive LLM commands
         self.subscription = self.create_subscription(
@@ -48,140 +61,176 @@ class LLMCommandParser(Node):
         # Publisher to send parsed commands
         self.publisher_ = self.create_publisher(String, '/target_object', 10)
 
-        self.get_logger().info("LLM Command Parser Node has been started.")
-        self.get_logger().info(f'Using Ollama model: {self.model_name}')
-        self.get_logger().info('Using CPU-only inference for Jetson Orin Nano')
-
-        # Test the ollama connection
-        self.test_ollama_connection()
+        self.get_logger().info("LLM Command Parser started!")
+        self.get_logger().info(f"  Model: {self.model_name}")
+        self.get_logger().info("  Checking Ollama service...")
+        
+        # Test Ollama connection
+        if not self.test_ollama_connection():
+            self.get_logger().warn("Ollama not available - will use keyword fallback")
+            self.use_llm = False
+        else:
+            self.get_logger().info("✓ Ollama service detected")
+            # Try to load model
+            if self.preload_model():
+                self.get_logger().info(f"Model '{self.model_name}' ready")
+            else:
+                self.get_logger().warn("Model failed to load - using fallback")
+                self.use_llm = False
 
     def test_ollama_connection(self):
-        """Test if ollama service is running"""
+        """Test if Ollama service is running"""
         try:
             result = subprocess.run(
-                ['ollama', 'list'],
+                ['curl', '-s', 'http://localhost:11434/api/tags'],
                 capture_output=True,
                 text=True,
-                timeout=5
+                timeout=2
             )
-            if result.returncode == 0:
-                self.get_logger().info('✓ Connected to Ollama')
-            else:
-                self.get_logger().error(f'Ollama error: {result.stderr}')
-        except Exception as e:
-            self.get_logger().error(f'Error connecting to Ollama: {e}')
+            return result.returncode == 0
+        except:
+            return False
 
-    def call_ollama(self, prompt):
-        """Call Ollama using CPU only (no CUDA)"""
+    def preload_model(self):
+        """Try to load the model to check if it works"""
+        try:
+            self.get_logger().info(f"  Loading {self.model_name} model...")
+            
+            # Use echo to pipe a simple test
+            test_cmd = f'echo "test" | CUDA_VISIBLE_DEVICES="" ollama run {self.model_name} --verbose 2>&1 | head -n 1'
+            
+            result = subprocess.run(
+                test_cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env={**os.environ, 'CUDA_VISIBLE_DEVICES': '', 'OLLAMA_NUM_GPU': '0'}
+            )
+            
+            # Check if it returned without CUDA error
+            if 'CUDA' in result.stderr or 'unable to allocate' in result.stderr:
+                self.get_logger().error("  GPU allocation error detected")
+                return False
+            
+            return True
+            
+        except subprocess.TimeoutExpired:
+            self.get_logger().warn("  Model load timeout")
+            return False
+        except Exception as e:
+            self.get_logger().error(f"  Model load error: {e}")
+            return False
+
+    def call_ollama_llm(self, prompt):
+        """Call Ollama LLM with CPU-only mode"""
         try:
             start_time = time.time()
             
-            # Disable GPU, use only CPU
-            env = os.environ.copy()
-            env['CUDA_VISIBLE_DEVICES'] = ''  # Disable CUDA
-            env['OLLAMA_NUM_GPU'] = '0'  # Disable GPU layers
+            # Create a temporary file with the prompt
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
+                f.write(prompt)
+                prompt_file = f.name
             
-            result = subprocess.run(
-                ['ollama', 'run', '--nowordwrap', self.model_name, prompt],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                env=env
-            )
-            
-            inference_time = time.time() - start_time
-            
-            if result.returncode == 0:
-                return result.stdout.strip(), inference_time
-            else:
-                self.get_logger().error(f'Ollama stderr: {result.stderr}')
-                return None, inference_time
+            try:
+                # Use cat to pipe prompt to ollama
+                cmd = f'cat {prompt_file} | CUDA_VISIBLE_DEVICES="" OLLAMA_NUM_GPU=0 ollama run {self.model_name}'
+                
+                result = subprocess.run(
+                    cmd,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    env={**os.environ, 'CUDA_VISIBLE_DEVICES': '', 'OLLAMA_NUM_GPU': '0'}
+                )
+                
+                inference_time = time.time() - start_time
+                
+                if result.returncode == 0 and 'CUDA' not in result.stderr:
+                    return result.stdout.strip(), inference_time
+                else:
+                    self.get_logger().error(f"LLM error: {result.stderr[:200]}")
+                    return None, inference_time
+                    
+            finally:
+                # Clean up temp file
+                os.unlink(prompt_file)
                 
         except subprocess.TimeoutExpired:
-            self.get_logger().error('Ollama command timed out (>120s)')
-            return None, 120.0
+            self.get_logger().error('LLM timeout (>60s)')
+            return None, 60.0
         except Exception as e:
-            self.get_logger().error(f'Error calling Ollama: {e}')
+            self.get_logger().error(f'LLM error: {e}')
             return None, 0.0
     
     def keyword_fallback_parser(self, command):
-        """Fallback keyword-based parser if LLM fails"""
+        """Fallback keyword-based parser"""
         command_lower = command.lower()
         
-        # Simple keyword matching
-        keywords = {
-            'person': ['person', 'human', 'guy', 'girl', 'man', 'woman', 'people'],
-            'dog': ['dog', 'puppy', 'canine'],
-            'cat': ['cat', 'kitten', 'feline'],
-            'chair': ['chair', 'seat', 'stool'],
-            'car': ['car', 'vehicle', 'automobile'],
-            'bicycle': ['bicycle', 'bike', 'cycle'],
-            'bottle': ['bottle', 'water bottle'],
-            'cup': ['cup', 'mug', 'glass'],
-            'book': ['book', 'reading'],
-            'laptop': ['laptop', 'computer', 'pc'],
-        }
-        
-        for obj_name, keywords_list in keywords.items():
-            for keyword in keywords_list:
+        for obj_name, keywords in self.keyword_map.items():
+            for keyword in keywords:
                 if keyword in command_lower:
                     return obj_name
         
         return None
     
     def process_command(self, msg):
-        """Parse text command with LLM and extract target object"""
+        """Parse text command with LLM or fallback"""
 
         user_command = msg.data
-        self.get_logger().info(f'Received command: "{user_command}"')
+        self.get_logger().info(f'Command: "{user_command}"')
 
-        # Create prompt for object extraction
-        prompt = f"Extract object name: {user_command}\nObject:"
+        extracted_object = None
+        used_method = "none"
 
-        # Try LLM first
-        extracted_object, inference_time = self.call_ollama(prompt)
+        # Try LLM first if enabled
+        if self.use_llm:
+            prompt = f"Question: What object should the robot go to?\nCommand: {user_command}\nAnswer with only one word - the object name:"
+            
+            llm_response, inference_time = self.call_ollama_llm(prompt)
+            
+            if llm_response and 'CUDA' not in llm_response:
+                extracted_object = llm_response.strip().lower().split('\n')[0].strip()
+                used_method = f"LLM ({inference_time:.2f}s)"
+                self.get_logger().info(f'LLM extracted: "{extracted_object}" in {inference_time:.2f}s')
         
-        if extracted_object:
-            extracted_object = extracted_object.strip().lower().split('\n')[0].strip()
-            self.get_logger().info(f'LLM extracted: "{extracted_object}" ({inference_time:.2f}s)')
-        else:
-            # Fallback to keyword-based parser
-            self.get_logger().warn('LLM failed, using keyword-based fallback parser')
+        # Fallback to keyword parser
+        if not extracted_object:
             extracted_object = self.keyword_fallback_parser(user_command)
             if extracted_object:
-                self.get_logger().info(f'Fallback extracted: "{extracted_object}"')
+                used_method = "Keyword fallback"
+                self.get_logger().info(f'Keyword extracted: "{extracted_object}"')
 
-        # Find best match from coco classes
+        # Find best match from COCO classes
         if extracted_object:
             matched_object = self.find_best_match(extracted_object)
 
             if matched_object:
-                # Publish target object to YOLO detector
                 target_msg = String()
                 target_msg.data = matched_object
                 self.publisher_.publish(target_msg)
-                self.get_logger().info(f'✓ Target: "{matched_object}" (class {self.coco_classes[matched_object]}) → YOLO')
+                self.get_logger().info(
+                    f'Target: "{matched_object}" (class {self.coco_classes[matched_object]}) '
+                    f'via {used_method} -> YOLO'
+                )
             else:
-                available = ", ".join(list(self.coco_classes.keys())[:5])
-                self.get_logger().warn(f'"{extracted_object}" not in COCO. Available: {available}...')
+                self.get_logger().warn(f'"{extracted_object}" not in COCO classes')
         else:
-            self.get_logger().error('Failed to extract object from command')
+            self.get_logger().error('Failed to extract object')
 
     def find_best_match(self, extracted_text):
-        """Find best matching COCO class from extracted text"""
-
+        """Find best matching COCO class"""
         extracted_lower = extracted_text.lower().strip()
 
-        # Direct match
         if extracted_lower in self.coco_classes:
             return extracted_lower
         
-        # Partial match - check if any class is contained in extracted text
         for class_name in self.coco_classes.keys():
             if class_name in extracted_lower and len(class_name) > 2:
                 return class_name
             
-        # Check if extracted text contains any coco class 
         for class_name in self.coco_classes.keys():
             if extracted_lower in class_name and len(class_name) > 2:
                 return class_name
@@ -191,11 +240,8 @@ class LLMCommandParser(Node):
     
 def main(args=None):
     rclpy.init(args=args)
-
     llm_command_parser = LLMCommandParser()
-
     rclpy.spin(llm_command_parser)
-
     llm_command_parser.destroy_node()
     rclpy.shutdown()
 
