@@ -4,11 +4,12 @@
 [![Python](https://img.shields.io/badge/Python-3.10+-green)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
-Autonomous navigation system with natural language commands via LLM (Ollama/TinyLlama), YOLOv8 detection, monocular depth estimation, and Nav2 for intelligent object following with search recovery.
+Autonomous navigation system with natural language commands via LLM running on NVIDIA Jetson Orin Nano, YOLOv8 detection, monocular depth estimation, and Nav2 for intelligent object following with search recovery.
 
 ## Features
 
-- **Natural Language Commands**: LLM-based command parsing (Ollama + TinyLlama)
+- **Natural Language Commands**: LLM-based command parsing (Ollama + TinyLlama on Jetson)
+- **Distributed Architecture**: LLM on Jetson Orin Nano, Vision/Nav on main system
 - **YOLOv8 Detection**: Real-time multi-object detection (80 COCO classes)
 - **Depth Estimation**: Monocular distance calculation from bounding boxes
 - **Autonomous Navigation**: Nav2 path planning with obstacle avoidance  
@@ -17,22 +18,25 @@ Autonomous navigation system with natural language commands via LLM (Ollama/Tiny
 
 ## Prerequisites
 
+**Main System (Desktop/Laptop):**
 - Ubuntu 22.04 + ROS2 Humble
 - Python 3.10+, Gazebo 11
 - TurtleBot3, Nav2, Cartographer packages
-- Ollama (for LLM command parsing)
 - 8GB RAM minimum (16GB recommended)
 
+**Edge Device (NVIDIA Jetson Orin Nano):**
+- JetPack 5.0+ (Ubuntu 20.04/22.04)
+- Ollama + TinyLlama model
+- ROS2 Humble (for topic communication)
+
 ## Installation
+
+### Main System Setup
 
 ```bash
 # Install dependencies
 sudo apt install ros-humble-navigation2 ros-humble-cartographer \
   ros-humble-cartographer-ros ros-humble-turtlebot3*
-
-# Install Ollama for LLM
-curl -fsSL https://ollama.com/install.sh | sh
-ollama pull tinyllama
 
 # Clone and setup
 cd ~/ros2_ws/src
@@ -49,6 +53,30 @@ colcon build --packages-select vision_language_nav
 source install/setup.bash
 export TURTLEBOT3_MODEL=waffle_pi
 ```
+
+### Jetson Orin Nano Setup (LLM Parser)
+
+```bash
+# Install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+ollama pull tinyllama
+
+# Install ROS2 Humble (if not already installed)
+# Follow: https://docs.ros.org/en/humble/Installation.html
+
+# Clone repository
+cd ~/ros2_ws/src
+git clone https://github.com/Sourav0607/VLN_BOT.git
+cd VLN_BOT/ros2_ws/src/vision_language_nav
+pip install -r requirements.txt
+
+# Build LLM parser node
+cd ~/ros2_ws
+colcon build --packages-select vision_language_nav
+source install/setup.bash
+```
+
+**Network Setup:** Ensure both systems are on the same ROS2 domain and can communicate via DDS.
 
 ## Usage
 
@@ -69,8 +97,9 @@ cd ~/ros2_ws/src/vision_language_nav/maps
 ros2 run nav2_map_server map_saver_cli -f my_map
 ```
 
-### Run System
+### Run System (Distributed)
 
+**On Main System:**
 ```bash
 # T1: Gazebo
 ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
@@ -79,21 +108,24 @@ ros2 launch turtlebot3_gazebo turtlebot3_world.launch.py
 ros2 launch turtlebot3_navigation2 navigation2.launch.py \
   use_sim_time:=True map:=<path/to/map.yaml>
 
-# T3: LLM Parser (for natural language commands)
-ros2 run vision_language_nav llm_parser
-
-# T4: Detector
+# T3: Detector
 ros2 run vision_language_nav person_detector
 
-# T5: Navigator  
+# T4: Navigator  
 ros2 run vision_language_nav person_navigator
+```
+
+**On Jetson Orin Nano:**
+```bash
+# Run LLM Parser (runs Ollama/TinyLlama)
+ros2 run vision_language_nav llm_parser
 ```
 
 **Set initial pose in RViz2 using "2D Pose Estimate"**
 
 ### Send Natural Language Commands
 
-```bash
+**From Jetson (or any system on ROS2 network):**
 # Send commands via topic
 ros2 topic pub /voice_command std_msgs/String "data: 'go to the person'"
 ros2 topic pub /voice_command std_msgs/String "data: 'find the chair'"
@@ -102,18 +134,34 @@ ros2 topic pub /voice_command std_msgs/String "data: 'navigate to the bottle'"
 
 ## How It Works
 
+### Distributed System Architecture
+
+```
+┌─────────────────────┐         ┌──────────────────────┐
+│  Jetson Orin Nano   │  ROS2   │    Main System       │
+│                     │ Topics  │                      │
+│  ┌───────────────┐  │────────▶│  ┌────────────────┐  │
+│  │ LLM Parser    │  │         │  │ YOLOv8 Detector│  │
+│  │ (TinyLlama)   │  │         │  │ Nav2 Navigator │  │
+│  └───────────────┘  │         │  │ Gazebo/RViz    │  │
+│  /voice_command     │         │  └────────────────┘  │
+│  /target_object     │         │  /camera/image_raw   │
+└─────────────────────┘         └──────────────────────┘
+```
+
 ### System Pipeline
 
-1. **User Input** → Natural language command sent to `/voice_command`
-2. **LLM Parser** → Ollama/TinyLlama extracts target object (with keyword fallback)
-3. **Object Detection** → YOLOv8 detects target in camera feed
-4. **Distance Estimation** → Calculate depth from bounding box
-5. **Navigation** → Nav2 plans path to target
-6. **Search Recovery** → Rotate and explore if target lost
+1. **User Input** → Natural language command sent to `/voice_command` (on Jetson)
+2. **LLM Parser (Jetson)** → Ollama/TinyLlama extracts target object
+3. **Target Published** → `/target_object` published across ROS2 network
+4. **Object Detection (Main)** → YOLOv8 detects target in camera feed
+5. **Distance Estimation** → Calculate depth from bounding box
+6. **Navigation** → Nav2 plans path to target
+7. **Search Recovery** → Rotate and explore if target lost
 
 **Example:**
 ```
-User: "go to the person" → LLM: "person" → YOLOv8: detect → Nav2: navigate
+Jetson: "go to the person" → LLM: "person" → Main System: YOLOv8 detect → Nav2 navigate
 ```
 
 ### Distance Estimation
@@ -168,14 +216,6 @@ estimated_depth = (1.7 * 250) / bbox_height - 0.8
 | `/cmd_vel` | `geometry_msgs/Twist` | Velocity commands |
 | `/navigate_to_pose` | `nav2_msgs/NavigateToPose` | Nav2 goals |
 
-## Performance
-
-| Metric | Value |
-|--------|-------|
-| Inference (CPU/GPU) | 30-50ms / 8-15ms |
-| Detection Accuracy | ±0.15m (0.5-3m range) |
-| Navigation Success | 92% (Gazebo) |
-| Search Success | 78% (3 attempts) |
 
 ## Troubleshooting
 
@@ -199,24 +239,24 @@ ros2 topic echo /target/distance
 
 ```
 ros2_ws/
-├── yolov8n.pt
+├── yolov8n.pt                       # YOLOv8 weights (main system)
 └── src/vision_language_nav/
     ├── vision_language_nav/
-    │   ├── llm_command_parser.py   # Ollama LLM + keyword fallback
-    │   ├── person_detector.py      # YOLOv8 multi-object detection
-    │   └── person_navigator.py     # Nav2 + search behavior
+    │   ├── llm_command_parser.py   # Runs on Jetson Orin Nano
+    │   ├── person_detector.py      # Runs on main system
+    │   └── person_navigator.py     # Runs on main system
     ├── maps/                        # SLAM maps
     └── worlds/                      # Gazebo worlds
 ```
 
-## Future Roadmap
+## Hardware Architecture
 
-- [x] LLM-based natural language commands (Ollama + TinyLlama)
-- [ ] Voice input integration (speech-to-text)
-- [ ] NVIDIA Jetson Orin Nano deployment with TensorRT
-- [ ] Multi-object tracking with unique IDs
-- [ ] Gesture-based commands
-- [ ] Real hardware testing on TurtleBot3
+**Deployment:**
+- **Jetson Orin Nano**: LLM inference (CPU-only TinyLlama) + ROS2 publisher
+- **Main System**: Gazebo simulation, YOLOv8 detection, Nav2 navigation
+- **Communication**: ROS2 DDS over WiFi/Ethernet
+    └── worlds/                      # Gazebo worlds
+```
 
 ## Limitations
 
@@ -247,10 +287,10 @@ Areas for improvement:
 ## Citation
 
 ```bibtex
-@software{vln_bot_2024,
+@software{vln_bot_2025,
   author = {Sourav},
   title = {VLN_BOT: Vision Language Navigation Robot},
-  year = {2024},
+  year = {2025},
   url = {https://github.com/Sourav0607/VLN_BOT}
 }
 ```
