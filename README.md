@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10+-green)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
-Autonomous navigation system with natural language commands via LLM running on NVIDIA Jetson Orin Nano, YOLOv8 detection, monocular depth estimation, and Nav2 for intelligent object following with search recovery.
+Autonomous navigation system with natural language commands via LLM running on NVIDIA Jetson Orin Nano, YOLOv8 detection, pixel-based distance estimation, and Nav2 for intelligent object following with search recovery.
 
 ## Gazebo view
 
@@ -15,7 +15,7 @@ Autonomous navigation system with natural language commands via LLM running on N
 - **Natural Language Commands**: LLM-based command parsing (Ollama + TinyLlama on Jetson)
 - **Distributed Architecture**: LLM on Jetson Orin Nano, Vision/Nav on main system
 - **YOLOv8 Detection**: Real-time multi-object detection (80 COCO classes)
-- **Depth Estimation**: Monocular distance calculation from bounding boxes
+- **Distance Estimation**: Pixel-based depth calculation from bounding box height using pinhole camera model
 - **Autonomous Navigation**: Nav2 path planning with obstacle avoidance  
 - **Smart Search**: 360° rotation + forward exploration when target lost
 - **SLAM Mapping**: Cartographer-based environment mapping
@@ -42,17 +42,19 @@ Autonomous navigation system with natural language commands via LLM running on N
 sudo apt install ros-humble-navigation2 ros-humble-cartographer \
   ros-humble-cartographer-ros ros-humble-turtlebot3*
 
-# Clone and setup
+# Clone repository
 cd ~/ros2_ws/src
-git clone https://github.com/Sourav0607/VLN_BOT.git
-cd VLN_BOT/ros2_ws/src/vision_language_nav
+git clone https://github.com/Sourav0607/VLN_BOT.git vision_language_nav
+
+# Install Python dependencies
+cd vision_language_nav
 pip install -r requirements.txt
 
-# Download YOLOv8 model
+# Download YOLOv8 model to workspace root
 cd ~/ros2_ws
 wget https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt
 
-# Build
+# Build package
 colcon build --packages-select vision_language_nav
 source install/setup.bash
 export TURTLEBOT3_MODEL=waffle_pi
@@ -122,7 +124,7 @@ ros2 run vision_language_nav person_navigator
 **On Jetson Orin Nano:**
 ```bash
 # Run LLM Parser (runs Ollama/TinyLlama)
-ros2 run vision_language_nav llm_parser
+ros2 run vision_language_nav llam_parser
 ```
 
 **Set initial pose in RViz2 using "2D Pose Estimate"**
@@ -171,26 +173,28 @@ Jetson: "go to the person" → LLM: "person" → Main System: YOLOv8 detect → 
 
 ### Distance Estimation
 
-Monocular depth from bounding box height using pinhole camera model:
+Pixel-based depth from bounding box height using pinhole camera model:
 
 $$d = \frac{f \cdot H_{real}}{H_{pixel}} - c$$
 
 - $f = 250$ px (focal length)
-- $H_{real} = 1.7$ m (person height)
+- $H_{real} = 1.7$ m (assumed person height - calibrated for standing person)
 - $H_{pixel}$ = bbox height
 - $c = 0.8$ m (calibration offset)
 
 **Implementation:**
 ```python
-estimated_depth = (1.7 * 250) / bbox_height - 0.8
+bbox_height = y2 - y1
+estimated_depth = (1.7 * 250) / bbox_height if bbox_height > 0 else 5.0
+estimated_depth = max(0.0, estimated_depth - 0.8)
 ```
 
 ### Navigation Logic
 
 1. **Command** → User sends natural language command
-2. **Parse** → LLM extracts target object from 80 COCO classes
-3. **Detect** → YOLOv8 finds target, calculates distance
-4. **Navigate** → If >0.35m away, send Nav2 goal to approach within 0.01m
+2. **Parse** → LLM/keyword parser extracts target object from 80 COCO classes
+3. **Detect** → YOLOv8 finds target, calculates distance from bounding box
+4. **Navigate** → If >0.35m away, send Nav2 goal (target_distance - 0.01m)
 5. **Search** → If lost >5s: rotate 360° + move forward 0.5m (max 3 cycles)
 
 ## Configuration
@@ -199,27 +203,28 @@ estimated_depth = (1.7 * 250) / bbox_height - 0.8
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `safe_margin` | 0.01m | Stop distance from person |
+| `safe_margin` | 0.01m | Stop distance from target |
 | `min_navigation_distance` | 0.35m | Min distance to trigger nav |
 | `person_lost_timeout` | 5.0s | Time before search starts |
 | `max_search_attempts` | 3 | Number of search cycles |
 
 **Detection** (`person_detector.py`):
-- `confidence_threshold`: 0.5
-- Distance formula: `(1.7 * 250) / bbox_height - 0.8`
+- `target_confidence_threshold`: 0.5
+- Distance formula: `(1.7 * 250) / bbox_height - 0.8` (assumes 1.7m person height)
+- Focal length: 250 px (calibration offset: 0.8m)
 
 ## Topics
 
 | Topic | Type | Description |
 |-------|------|-------------|
 | `/voice_command` | `std_msgs/String` | Input: Natural language commands |
-| `/target_object` | `std_msgs/String` | LLM output: Parsed object name |
-| `/camera/image_raw` | `sensor_msgs/Image` | Camera input |
-| `/camera/image_detected` | `sensor_msgs/Image` | Annotated output |
-| `/target/distance` | `std_msgs/Float32` | Distance to target object |
-| `/detected_object` | `std_msgs/String` | Currently detected object class |
-| `/cmd_vel` | `geometry_msgs/Twist` | Velocity commands |
-| `/navigate_to_pose` | `nav2_msgs/NavigateToPose` | Nav2 goals |
+| `/target_object` | `std_msgs/String` | LLM output: Parsed object name (COCO class) |
+| `/camera/image_raw` | `sensor_msgs/Image` | Camera input from Gazebo |
+| `/camera/image_detected` | `sensor_msgs/Image` | Annotated output with bounding boxes |
+| `/target/distance` | `std_msgs/Float32` | Estimated distance to closest target |
+| `/detected_object` | `std_msgs/String` | Currently detected object class name |
+| `/cmd_vel` | `geometry_msgs/Twist` | Velocity commands (search behavior) |
+| `navigate_to_pose` | `nav2_msgs/NavigateToPose` | Nav2 action (not topic) |
 
 
 ## Troubleshooting
@@ -248,10 +253,11 @@ ros2_ws/
 └── src/vision_language_nav/
     ├── vision_language_nav/
     │   ├── llm_command_parser.py   # Runs on Jetson Orin Nano
-    │   ├── person_detector.py      # Runs on main system
+    │   ├── person_detector.py      # Runs on main system (any COCO object)
     │   └── person_navigator.py     # Runs on main system
     ├── maps/                        # SLAM maps
-    └── worlds/                      # Gazebo worlds
+    ├── worlds/                      # Gazebo worlds (my_world.world)
+    └── requirements.txt             # Python dependencies
 ```
 
 ## Hardware Architecture
@@ -264,8 +270,8 @@ ros2_ws/
 ## Limitations
 
 - LLM inference on CPU (~2-10s per command with TinyLlama)
-- Monocular depth accuracy degrades beyond 3m
-- Depth estimation assumes upright objects
+- Pixel-based distance estimation accuracy degrades beyond 3m
+- Distance estimation assumes upright objects and requires calibrated focal length
 - Static maps only (no dynamic environments)
 - Single target tracking (closest detected object)
 
